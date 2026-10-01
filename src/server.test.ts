@@ -667,6 +667,45 @@ function schemaPropertyPaths(
   return paths;
 }
 
+test("health and readiness endpoints distinguish process liveness from MCP readiness", async (t) => {
+  const context = await httpServerFixture(t, "devspace-readiness-test-");
+
+  const healthResponse = await fetch(`${context.localBaseUrl}/healthz`);
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(await healthResponse.json(), { ok: true, name: "devspace" });
+
+  const readinessResponse = await fetch(`${context.localBaseUrl}/readyz`);
+  assert.equal(readinessResponse.status, 200);
+  const readiness = await readinessResponse.json() as {
+    ok?: boolean;
+    name?: string;
+    mcp?: { status?: number };
+  };
+  assert.equal(readiness.ok, true);
+  assert.equal(readiness.name, "devspace");
+  assert.equal(readiness.mcp?.status, 200);
+});
+
+test("rejected bearer auth settles the MCP request instead of hanging", async (t) => {
+  const context = await httpServerFixture(t, "devspace-auth-reject-test-");
+  const response = await fetch(`${context.localBaseUrl}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer definitely-invalid",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "invalid-auth",
+      method: "tools/list",
+      params: {},
+    }),
+    signal: AbortSignal.timeout(2_000),
+  });
+
+  assert.equal(response.status, 401);
+});
+
 interface HttpServerFixture {
   root: string;
   localBaseUrl: string;

@@ -918,16 +918,96 @@ export function createServer(
     res.json({ ok: true, name: "devspace" });
   });
 
+  app.get("/readyz", async (_req, res) => {
+    try {
+      const response = await mcpHandler.fetch(new Request("https://devspace.local/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "mcp-method": "tools/list",
+          "mcp-protocol-version": "2026-07-28",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "devspace-readiness",
+          method: "tools/list",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        }),
+      }));
+      const ok = response.status >= 200 && response.status < 300;
+      if (!ok) {
+        logEvent(config.logging, "warn", "mcp_readiness_failed", {
+          status: response.status,
+        });
+      }
+      res.status(ok ? 200 : 503).json({
+        ok,
+        name: "devspace",
+        mcp: { status: response.status },
+      });
+    } catch (error) {
+      logEvent(config.logging, "error", "mcp_readiness_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(503).json({
+        ok: false,
+        name: "devspace",
+        mcp: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+  });
+
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
+    const mcpStartedAt = performance.now();
+    let mcpCompleted = false;
 
-    await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
-        if (error) reject(error);
-        else resolve();
+    logEvent(config.logging, "info", "mcp_request_start", {
+      requestId,
+      method: req.method,
+      ...requestLogFields(req, config),
+    });
+
+    res.once("close", () => {
+      if (mcpCompleted || res.writableEnded) return;
+      logEvent(config.logging, "warn", "mcp_client_abort", {
+        requestId,
+        method: req.method,
+        durationMs: Math.round(performance.now() - mcpStartedAt),
+        ...requestLogFields(req, config),
       });
     });
-    if (res.headersSent) return;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        res.off("finish", onResponseEnded);
+        res.off("close", onResponseEnded);
+      };
+      const settle = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const onResponseEnded = () => settle(resolve);
+
+      res.once("finish", onResponseEnded);
+      res.once("close", onResponseEnded);
+      bearerAuth(req, res, (error?: unknown) => {
+        if (error) settle(() => reject(error));
+        else settle(resolve);
+      });
+    });
+    if (res.headersSent) {
+      mcpCompleted = true;
+      return;
+    }
 
     if (!req.auth?.resource || !oauthProvider.isResourceAllowed(req.auth.resource)) {
       logEvent(config.logging, "warn", "auth_denied", {
@@ -948,9 +1028,18 @@ export function createServer(
 
     try {
       await mcpNodeHandler(req, res, req.body);
+      mcpCompleted = true;
+      logEvent(config.logging, "info", "mcp_request_complete", {
+        requestId,
+        method: req.method,
+        status: res.statusCode,
+        durationMs: Math.round(performance.now() - mcpStartedAt),
+      });
     } catch (error) {
+      mcpCompleted = true;
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
+        durationMs: Math.round(performance.now() - mcpStartedAt),
         error: error instanceof Error ? error.message : String(error),
       });
       if (!res.headersSent) {
