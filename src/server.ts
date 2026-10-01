@@ -862,7 +862,11 @@ export function createServer(
   });
 
   if (config.logging.trustProxy) {
-    app.set("trust proxy", true);
+    // Trust exactly one reverse-proxy hop (for example the local cloudflared
+    // connector). Express treats boolean true as fully permissive, and
+    // express-rate-limit rejects that setting because arbitrary clients could
+    // spoof forwarded IP headers.
+    app.set("trust proxy", 1);
   }
 
   app.use((req, res, next) => {

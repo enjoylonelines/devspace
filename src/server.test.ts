@@ -667,6 +667,17 @@ function schemaPropertyPaths(
   return paths;
 }
 
+test("trust proxy mode remains compatible with OAuth rate limiting", async (t) => {
+  const context = await httpServerFixture(t, "devspace-trust-proxy-test-", {
+    trustProxy: true,
+  });
+
+  const response = await fetch(`${context.localBaseUrl}/healthz`, {
+    headers: { "x-forwarded-for": "203.0.113.10" },
+  });
+  assert.equal(response.status, 200);
+});
+
 test("health and readiness endpoints distinguish process liveness from MCP readiness", async (t) => {
   const context = await httpServerFixture(t, "devspace-readiness-test-");
 
@@ -716,6 +727,7 @@ interface HttpServerFixture {
 async function httpServerFixture(
   t: TestContext,
   prefix: string,
+  options: { trustProxy?: boolean } = {},
 ): Promise<HttpServerFixture> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const ownerToken = "test-owner-token-that-is-long-enough";
@@ -723,6 +735,7 @@ async function httpServerFixture(
     server: {
       port: 1,
       publicBaseUrl: "https://example.test",
+      trustProxy: options.trustProxy ?? false,
     },
     workspaces: {
       allowedRoots: [root],
