@@ -49,7 +49,18 @@ test("tool modes expose the expected host-facing tool surface", async (t) => {
   }
 });
 
-test("model-facing tool schemas use snake_case recursively", async (t) => {
+test("model-facing tool schemas keep snake_case except documented legacy aliases", async (t) => {
+  const legacyAliases = new Set([
+    "read.input.workspaceId",
+    "write.input.workspaceId",
+    "edit.input.workspaceId",
+    "edit.input.edits[].oldText",
+    "edit.input.edits[].newText",
+    "bash.input.workspaceId",
+    "bash.input.workingDirectory",
+    "show_changes.input.workspaceId",
+  ]);
+
   for (const toolMode of ["claude", "codex"] as const) {
     await t.test(toolMode, async (nested) => {
       const context = await fixture(nested, { toolMode, uiEnabled: false });
@@ -61,7 +72,7 @@ test("model-facing tool schemas use snake_case recursively", async (t) => {
         ...schemaPropertyPaths(tool.outputSchema)
           .filter(({ key }) => !/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(key))
           .map(({ path }) => `${tool.name}.output.${path}`),
-      ]);
+      ]).filter((path) => !legacyAliases.has(path));
 
       assert.deepEqual(invalidPaths, []);
     });

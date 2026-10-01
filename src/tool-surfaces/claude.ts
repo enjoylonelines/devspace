@@ -38,6 +38,15 @@ export function registerClaudeTools(context: ToolRegistrationContext): void {
 
 const CLAUDE_SHELL_DESCRIPTION = "Run a shell command in a workspace with the user's local permissions.";
 
+function requireWorkspaceId(
+  legacyWorkspaceId: string | undefined,
+  workspaceId: string | undefined,
+): string {
+  const resolved = legacyWorkspaceId ?? workspaceId;
+  if (!resolved) throw new Error("workspaceId or workspace_id is required.");
+  return resolved;
+}
+
 function registerClaudeMutationTools(context: ToolRegistrationContext): void {
   const { server, config, workspaces } = context;
 
@@ -47,7 +56,8 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       title: "Write file",
       description: "Create or completely overwrite a file in a workspace.",
       inputSchema: {
-        workspace_id: z.string().describe(workspaceIdDescription),
+        workspaceId: z.string().optional().describe(workspaceIdDescription),
+        workspace_id: z.string().optional().describe(workspaceIdDescription),
         path: z
           .string()
           .describe("File path to write, relative to the workspace root."),
@@ -56,9 +66,9 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       outputSchema: resultOutputSchema(),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspace_id, ...input }) => {
+    async ({ workspaceId: legacyWorkspaceId, workspace_id, ...input }) => {
       const startedAt = performance.now();
-      const workspaceId = workspace_id;
+      const workspaceId = requireWorkspaceId(legacyWorkspaceId, workspace_id);
       const workspace = await workspaces.getWorkspace(workspaceId);
       const path = await workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool({ ...input, path }, { cwd: workspace.root });
@@ -99,21 +109,20 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
     {
       title: "Edit file",
       description:
-        "Edit one file in a workspace by replacing exact text blocks. Each old_text must match a unique, non-overlapping region of the original file.",
+        "Edit one file in a workspace by replacing exact text blocks. Supports both legacy camelCase and current snake_case input names.",
       inputSchema: {
-        workspace_id: z.string().describe(workspaceIdDescription),
+        workspaceId: z.string().optional().describe(workspaceIdDescription),
+        workspace_id: z.string().optional().describe(workspaceIdDescription),
         path: z
           .string()
           .describe("File path to edit, relative to the workspace root."),
         edits: z
           .array(
             z.object({
-              old_text: z
-                .string()
-                .describe(
-                  "Exact text to replace. Must match uniquely in the original file.",
-                ),
-              new_text: z.string().describe("Replacement text."),
+              oldText: z.string().optional(),
+              newText: z.string().optional(),
+              old_text: z.string().optional(),
+              new_text: z.string().optional(),
             }),
           )
           .min(1),
@@ -123,18 +132,28 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       }),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspace_id, edits, ...input }) => {
+    async ({
+      workspaceId: legacyWorkspaceId,
+      workspace_id,
+      edits,
+      ...input
+    }) => {
       const startedAt = performance.now();
-      const workspaceId = workspace_id;
+      const workspaceId = requireWorkspaceId(legacyWorkspaceId, workspace_id);
       const workspace = await workspaces.getWorkspace(workspaceId);
       const path = await workspaces.resolvePath(workspace, input.path);
+      const normalizedEdits = edits.map((edit) => {
+        const oldText = edit.oldText ?? edit.old_text;
+        const newText = edit.newText ?? edit.new_text;
+        if (oldText === undefined || newText === undefined) {
+          throw new Error("Each edit requires oldText/newText or old_text/new_text.");
+        }
+        return { oldText, newText };
+      });
       const response = await editFileTool({
         ...input,
         path,
-        edits: edits.map(({ old_text, new_text }) => ({
-          oldText: old_text,
-          newText: new_text,
-        })),
+        edits: normalizedEdits,
       }, { cwd: workspace.root });
 
       if (response.isError) {
@@ -184,10 +203,12 @@ function registerShellTool(context: ToolRegistrationContext): void {
       title: "Bash",
       description: CLAUDE_SHELL_DESCRIPTION,
       inputSchema: {
-        workspace_id: z.string().describe(workspaceIdDescription),
+        workspaceId: z.string().optional().describe(workspaceIdDescription),
+        workspace_id: z.string().optional().describe(workspaceIdDescription),
         command: z
           .string()
           .describe("Shell command to execute."),
+        workingDirectory: z.string().optional(),
         working_directory: z
           .string()
           .optional()
@@ -204,10 +225,16 @@ function registerShellTool(context: ToolRegistrationContext): void {
       outputSchema: resultOutputSchema(),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspace_id, working_directory, ...input }) => {
+    async ({
+      workspaceId: legacyWorkspaceId,
+      workspace_id,
+      workingDirectory: legacyWorkingDirectory,
+      working_directory,
+      ...input
+    }) => {
       const startedAt = performance.now();
-      const workspaceId = workspace_id;
-      const workingDirectory = working_directory;
+      const workspaceId = requireWorkspaceId(legacyWorkspaceId, workspace_id);
+      const workingDirectory = legacyWorkingDirectory ?? working_directory;
       const workspace = await workspaces.getWorkspace(workspaceId);
       const cwd = await workspaces.resolveWorkingDirectory(
         workspace,

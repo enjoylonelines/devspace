@@ -628,9 +628,8 @@ function registerMcpSurface(
           .filter(Boolean)
           .join(" "),
       inputSchema: {
-        workspace_id: z
-          .string()
-          .describe(workspaceIdDescription),
+        workspaceId: z.string().optional().describe(workspaceIdDescription),
+        workspace_id: z.string().optional().describe(workspaceIdDescription),
         path: z
           .string()
           .describe(
@@ -654,9 +653,10 @@ function registerMcpSurface(
       outputSchema: resultOutputSchema(),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspace_id, ...input }) => {
+    async ({ workspaceId: legacyWorkspaceId, workspace_id, ...input }) => {
       const startedAt = performance.now();
-      const workspaceId = workspace_id;
+      const workspaceId = legacyWorkspaceId ?? workspace_id;
+      if (!workspaceId) throw new Error("workspaceId or workspace_id is required.");
       const workspace = await workspaces.getWorkspace(workspaceId);
       const readPath = await workspaces.resolveReadPath(workspace, input.path);
       const response = await readFileTool(
@@ -705,7 +705,8 @@ function registerMcpSurface(
       description:
         "Show the changes made in this turn for an open workspace. Call this once after the final related file change and before your final response so the user can review the combined diff. Do not call it after each individual file change.",
       inputSchema: {
-        workspace_id: z.string().describe(workspaceIdDescription),
+        workspaceId: z.string().optional().describe(workspaceIdDescription),
+        workspace_id: z.string().optional().describe(workspaceIdDescription),
       },
       outputSchema: resultOutputSchema({
         workspace_id: z.string(),
@@ -714,9 +715,10 @@ function registerMcpSurface(
       ...workspaceAppDescriptorMeta(config),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspace_id }, { _meta }) => {
+    async ({ workspaceId: legacyWorkspaceId, workspace_id }, { _meta }) => {
       const startedAt = performance.now();
-      const workspaceId = workspace_id;
+      const workspaceId = legacyWorkspaceId ?? workspace_id;
+      if (!workspaceId) throw new Error("workspaceId or workspace_id is required.");
       const workspace = await workspaces.getWorkspace(workspaceId);
       const reviewRef = typeof _meta?.["devspace/reviewRef"] === "string"
         ? _meta["devspace/reviewRef"]
