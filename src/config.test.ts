@@ -121,6 +121,11 @@ try {
   });
 
   assert.equal(loadConfig(env).oauth.ownerToken, env.DEVSPACE_OAUTH_OWNER_TOKEN);
+  assert.equal(loadConfig({ ...env, DEVSPACE_PORT: "7799" }).port, 7799);
+  assert.throws(
+    () => loadConfig({ ...env, DEVSPACE_PORT: "not-a-port" }),
+    /DEVSPACE_PORT must be an integer/,
+  );
 } finally {
   rmSync(configDir, { recursive: true, force: true });
 }

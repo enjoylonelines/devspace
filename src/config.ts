@@ -35,7 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const files = loadDevspaceFiles(env);
   const stored = files.config;
   const host = stored.server.host;
-  const port = stored.server.port;
+  const port = parseOptionalPort(env.DEVSPACE_PORT, stored.server.port);
   const publicBaseUrl = parsePublicBaseUrl(
     stored.server.publicBaseUrl ?? localPublicBaseUrl(host, port),
   );
@@ -95,6 +95,15 @@ function normalizePath(path: string): string {
 function normalizeAllowedHosts(hosts: string[]): string[] {
   if (hosts.includes("*")) return ["*"];
   return Array.from(new Set(hosts.map((host) => host.trim()).filter(Boolean)));
+}
+
+function parseOptionalPort(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
+    throw new Error("DEVSPACE_PORT must be an integer from 1 through 65535.");
+  }
+  return parsed;
 }
 
 function parseRequiredSecret(value: string | undefined): string {
