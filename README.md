@@ -22,6 +22,73 @@ DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and r
 
 The same `/mcp` endpoint serves the 2026-07-28 per-request protocol and automatically supports older 2025-era clients through stateless compatibility handling. There is no protocol mode to configure.
 
+## 멀티워커 MCP 실행 안정성 보강
+
+> 구현 브랜치: [`fix/mcp-resilience`](https://github.com/enjoylonelines/devspace/tree/fix/mcp-resilience)<br />
+> DevSpace 오픈소스를 기반으로, ChatGPT가 로컬 작업을 계속 이어갈 수 있도록 MCP 워커의 준비 상태·세션 복구·호환성 경로를 보강했습니다.
+
+### 프로젝트 요약
+
+| 항목 | 내용 |
+| --- | --- |
+| 배경 | 장시간 작업 중 특정 MCP 워커가 중단되면, 같은 세션이 기본 워커로 이동해 로컬 프로세스 세션을 다시 열어야 하는 문제가 있었습니다. |
+| 서버 문제 | 단순 HTTP 응답 확인만으로는 실제 MCP 도구 호출이 가능한지 알 수 없고, 워커별 실행 포트와 요청 종료 원인을 추적하기 어려웠습니다. |
+| 설계 | 각 워커는 독립 포트에서 실행하고, 라우터는 세션을 워커에 고정합니다. 워커가 중단되면 준비 상태를 확인한 뒤 정상 워커로 세션을 넘기고 프로세스 세션 재연결 신호를 전달합니다. |
+| 구현 | `DEVSPACE_PORT` 포트 오버라이드, `/readyz` MCP 준비 상태 확인, MCP 요청 시작·완료·중단 로그, 기존 도구 입력 호환을 구현했습니다. |
+| 검증 | 워커 소유 세션을 강제로 중단하는 30회 로컬 라우터 통합 실험으로 세션 연속성과 복구 경로를 비교했습니다. |
+
+### 멀티워커 실행 구조
+
+```mermaid
+flowchart LR
+    H[MCP Host<br/>ChatGPT / Claude] --> R[고정 진입점 라우터]
+    R -->|mcp-session-id| A[DevSpace Worker A]
+    R -->|mcp-session-id| B[DevSpace Worker B]
+
+    R -. 준비 상태 확인 .-> A
+    R -. 준비 상태 확인 .-> B
+    A --> M[/mcp 도구 호출]
+    B --> M
+
+    A -. 워커 중단 .-> R
+    R -->|정상 워커로 복구| B
+    R -->|process-sessions 재연결 신호| H
+```
+
+### 구현한 서버 책임
+
+| 변경 | 처리 내용 |
+| --- | --- |
+| 워커별 포트 | `DEVSPACE_PORT` 환경 변수로 워커마다 다른 포트에서 DevSpace 서버를 실행 |
+| 실제 MCP 준비 상태 | `/readyz`에서 MCP `tools/list` 요청을 실행해 도구 호출 경로가 준비됐을 때만 성공 응답 |
+| 요청 추적 | `/mcp` 요청의 시작·완료·오류·클라이언트 중단을 요청 식별자와 처리 시간으로 기록 |
+| 세션 복구 | 라우터가 중단된 세션 소유 워커를 감지하면 정상 커스텀 워커로 넘기고 `process-sessions` 재연결 신호 전달 |
+| 기존 클라이언트 호환 | `workspaceId`/`workspace_id`, `oldText`/`old_text` 등 기존·현재 입력 형식을 함께 수용 |
+| 프록시 신뢰 범위 | 전달 IP 헤더는 역방향 프록시 한 홉만 신뢰하도록 제한 |
+
+### 검증 결과
+
+동일 세션을 특정 워커에 고정한 뒤, 그 워커를 중단하고 정상 워커에서 작업을 이어가는 로컬 라우터 통합 실험을 진행했습니다. 기본 구성과 멀티워커 구성을 각각 30회씩 비교했습니다.
+
+| 지표 | 단일 커스텀 워커 | 커스텀 워커 2개 |
+| --- | ---: | ---: |
+| 중단 뒤 정상 커스텀 워커에서 세션 계속 | 0 / 30 | **30 / 30** |
+| 기본 워커로 이동 | 30 / 30 | **0 / 30** |
+| 교체 워커에 세션 고정 유지 | 0 / 30 | **30 / 30** |
+| 워커 복구 뒤 정상 상태 확인 | 30 / 30 | 30 / 30 |
+| 준비 상태 감지 p95 | 2,002.1 ms | 1,999.1 ms |
+
+이 실험은 루프백 환경의 임시 MCP 워커와 2초 준비 상태 주기를 사용했습니다. 확인한 것은 워커 하나가 중단된 경우의 세션 복구 경로와 라우터 동작입니다.
+
+### 구현 레퍼런스
+
+| 확인 대상 | 링크 |
+| --- | --- |
+| 워커별 포트 설정 | [`src/config.ts`](https://github.com/enjoylonelines/devspace/blob/fix/mcp-resilience/src/config.ts) |
+| MCP 준비 상태·요청 로그 | [`src/server.ts`](https://github.com/enjoylonelines/devspace/blob/fix/mcp-resilience/src/server.ts) |
+| MCP 호환 입력 처리 | [`src/tool-surfaces/claude.ts`](https://github.com/enjoylonelines/devspace/blob/fix/mcp-resilience/src/tool-surfaces/claude.ts) |
+| 회귀 테스트 | [`src/server.test.ts`](https://github.com/enjoylonelines/devspace/blob/fix/mcp-resilience/src/server.test.ts) |
+
 ## Sponsors and Special Thanks
 <!-- 
 
